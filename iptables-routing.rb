@@ -31,6 +31,9 @@ kube_get("default", "namespace")["items"].map{|ns|ns["metadata"]["name"]}.each d
     endpoints = kube_get(ns, "endpoints")["items"].group_by{|endpoint| endpoint.name}
 
     kube_get(ns, "service")["items"].each do |service|
+        # TODO we should avoid forwarding host services
+        next if ns == "default" && (service.name == "kubernetes" || service.name == "kubernetes-ro")
+
         $log.debug "  - s #{service["metadata"]["name"]}"
         service_ip = service["spec"]["portalIP"]
         $log.debug "    - service IP: #{service_ip}"
