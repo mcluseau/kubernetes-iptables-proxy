@@ -4,82 +4,96 @@
 require 'json'
 require 'shellwords'
 
-def kube_get(ns, *cmd)
-    JSON.load(`kubectl --namespace=#{ns} -o json get #{cmd.join(" ")}`)
+class Hash
+    # Handle a very common pattern in k8s ;)
+    def name
+        self["metadata"]["name"]
+    end
 end
+
+def kube_get(ns, *cmd)
+    JSON.load(`./kubectl --namespace=#{ns} -o json get #{cmd.join(" ")}`)
+end
+
+require 'logger'
+$log = Logger.new($stdout)
+$log.level = Logger::INFO
 
 dnat_rules = [ ]
 snat_rules = [ ]
 
-kube_get("default", "namespace")["items"].map{|ns|ns["metadata"]["name"]}.sort.each do |ns|
-    puts "ns #{ns}"
+$log.info "Loading configuration..."
+kube_get("default", "namespace")["items"].map{|ns|ns["metadata"]["name"]}.each do |ns|
+    $log.debug "ns #{ns}"
+
+    endpoints = kube_get(ns, "endpoints")["items"].group_by{|endpoint| endpoint.name}
 
     kube_get(ns, "service")["items"].each do |service|
-        puts "  - s #{service["metadata"]["name"]}"
+        $log.debug "  - s #{service["metadata"]["name"]}"
         service_ip = service["spec"]["portalIP"]
-        #puts "    - service IP: #{service_ip}"
+        $log.debug "    - service IP: #{service_ip}"
 
-        selector = service["spec"]["selector"]
-        next unless selector
-
-        pods = kube_get(ns, "pod","-l",selector.map{|k,v|"#{k}=#{v}"}.join(","))["items"]
-        next if pods.empty?
-
-        target_ips = pods.map do |pod|
-            pod["status"]["podIP"]
+        target_ips = []
+        endpoints[service.name].each do |endpoint|
+            endpoint["subsets"].each do |subset|
+                target_ips += (subset["addresses"]||[]).map{|address| address["IP"]}
+            end
         end
         target_ips.sort!
 
-        # TODO support load-balancing
-        next if target_ips.size > 1
-
         dnat = "-A my-dnat -d #{service_ip}/32"
-        comment = "service #{ns}/#{service["metadata"]["name"]}"
+        comment = "service #{ns}/#{service.name}"
 
-        target_ips.each do |target_ip|
-            snat_rules << "-A my-snat -d #{target_ip}/32 -j MASQUERADE"
+        service["spec"]["ports"].each do |port|
+            protocol = port["protocol"].downcase
+            source_port = port["port"]
+            target_port = port["targetPort"]
+            port_match = "-m #{protocol} -p #{protocol} --dport #{source_port}"
 
-            service["spec"]["ports"].each do |port|
-                protocol = port["protocol"]
-                source_port = port["port"]
-                target_port = port["targetPort"]
+            $log.debug "      - port: #{source_port} -> #{target_port}"
+            target_ips.each_with_index do |target_ip, nth|
+                $log.debug "      - to: #{target_ip}"
 
                 port_name = port["name"]
                 port_name = nil if port_name.empty?
 
-                port_comment = "#{comment}#{" #{port_name}" if port_name} (#{source_port} to #{target_port})"
+                port_comment = "-m comment --comment \"#{comment}#{" #{port_name}" if port_name} (#{source_port} to #{target_ip}:#{target_port})\""
+
+                snat_rules << "-A my-snat -d #{target_ip}/32 -j MASQUERADE #{port_match} #{port_comment}"
+
+                # every nth matches weirdly, use random for a better distribution
+                if nth == target_ips.size-1
+                    # last rule should catch the remaining traffic
+                    every_nth = ""
+                else
+                    every_nth = " -m statistic --mode random --probability #{1.0/target_ips.size}"
+                    #every_nth = " -m statistic --mode nth --packet #{nth} --every #{target_ips.size}"
+                end
 
                 port_dnat = \
-                    "#{dnat}" \
-                    " -p #{protocol.downcase} --dport #{source_port}" \
-                    " -m comment --comment #{port_comment.shellescape}" \
-                    " -j DNAT" \
-                    " --to-destination '#{target_ip}:#{target_port}'"
+                    "#{dnat} #{port_match} #{port_comment}" +
+                    every_nth +
+                    " -j DNAT --to-destination #{target_ip}:#{target_port}"
 
                 dnat_rules << port_dnat
             end
         end
+        # Also reject remaining traffic to the service IP
+        dnat = "-A my-dnat -d #{service_ip}/32 -j REJECT"
     end
 end
 
 def sync_rules(chain, rules)
-    existing_rules = `ssh ceph-2.isi iptables -t nat -w -S #{chain}`.strip
-    existing_rules = existing_rules.empty? ? [] : existing_rules.split("\n")
-
-    IO.popen("ssh ceph-2.isi", "w") do |ssh|
+    $log.info "Updating chain #{chain} ..."
+    # use iptables-restore for transationnal update
+    IO.popen("#{ARGV.map{|a|a.shellescape}.join(" ")} iptables-restore --noflush", "w") do |ssh|
+        ssh.puts "*nat"
+        ssh.puts ":#{chain} -"
+        ssh.puts "-F #{chain}"
         rules.each do |wanted_rule|
-            next if existing_rules.member? wanted_rule
-            puts "+ #{wanted_rule}"
-            ssh.puts "iptables -t nat -w #{wanted_rule}"
-            ssh.flush
+            ssh.puts wanted_rule
         end
-        existing_rules.each do |existing_rule|
-            next if existing_rule =~ /^-N/
-            next if rules.member? existing_rule
-            puts "- #{existing_rule}"
-            ssh.puts "iptables -t nat -w #{existing_rule.sub("-A","-D")}"
-            ssh.flush
-        end
+        ssh.puts "COMMIT"
     end
 end
 
