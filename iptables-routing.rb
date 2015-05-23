@@ -61,13 +61,13 @@ kube_get("default", "namespace")["items"].map{|ns|ns["metadata"]["name"]}.each d
 
                 snat_rules << "-A my-snat -d #{target_ip}/32 -j MASQUERADE #{port_match} #{port_comment}"
 
-                # every nth matches weirdly, use random for a better distribution
                 if nth == target_ips.size-1
                     # last rule should catch the remaining traffic
                     every_nth = ""
                 else
-                    every_nth = " -m statistic --mode random --probability #{1.0/target_ips.size}"
+                    # every nth matches weirdly, use random for a better distribution
                     #every_nth = " -m statistic --mode nth --packet #{nth} --every #{target_ips.size}"
+                    every_nth = " -m statistic --mode random --probability #{1.0/target_ips.size}"
                 end
 
                 port_dnat = \
