@@ -66,7 +66,7 @@ kube_get("default", "namespace")["items"].map{|ns|ns["metadata"]["name"]}.each d
                 else
                     # every nth matches weirdly, use random for a better distribution
                     #every_nth = " -m statistic --mode nth --packet #{nth} --every #{target_ips.size}"
-                    every_nth = " -m statistic --mode random --probability #{1.0/target_ips.size}"
+                    every_nth = " -m statistic --mode random --probability #{1.0/(target_ips.size-nth)}"
                 end
 
                 port_dnat = \
