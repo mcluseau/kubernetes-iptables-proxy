@@ -1,6 +1,12 @@
 #! /usr/bin/ruby
 # encoding: utf-8
 
+require 'logger'
+$log = Logger.new($stdout)
+$log.level = Logger::INFO
+
+$log.info "Initializing..."
+
 require 'json'
 require 'shellwords'
 
@@ -15,14 +21,10 @@ def kube_get(ns, *cmd)
     JSON.load(`./kubectl --namespace=#{ns} -o json get #{cmd.join(" ")}`)
 end
 
-require 'logger'
-$log = Logger.new($stdout)
-$log.level = Logger::INFO
-
 dnat_rules = [ ]
 snat_rules = [ ]
 
-$log.info "Loading configuration..."
+$log.info "Loading cluster state..."
 kube_get("default", "namespace")["items"].map{|ns|ns["metadata"]["name"]}.each do |ns|
     $log.debug "ns #{ns}"
 
@@ -45,22 +47,19 @@ kube_get("default", "namespace")["items"].map{|ns|ns["metadata"]["name"]}.each d
         comment = "service #{ns}/#{service.name}"
 
         service["spec"]["ports"].each do |port|
+            port_name = port["name"]
+            port_name = nil if port_name.empty?
             protocol = port["protocol"].downcase
             source_port = port["port"]
             target_port = port["targetPort"]
-            port_match = "-m #{protocol} -p #{protocol} --dport #{source_port}"
+            target_port_match = "-m #{protocol} -p #{protocol} --dport #{source_port}"
+            source_port_match = "-m #{protocol} -p #{protocol} --dport #{target_port}"
 
             $log.debug "      - port: #{source_port} -> #{target_port}"
             target_ips.each_with_index do |target_ip, nth|
                 $log.debug "      - to: #{target_ip}"
 
-                port_name = port["name"]
-                port_name = nil if port_name.empty?
-
-                port_comment = "-m comment --comment \"#{comment}#{" #{port_name}" if port_name} (#{source_port} to #{target_ip}:#{target_port})\""
-
-                snat_rules << "-A my-snat -d #{target_ip}/32 -j MASQUERADE #{port_match} #{port_comment}"
-
+                rule_comment = "-m comment --comment \"#{comment}#{" #{port_name}" if port_name} (#{source_port} to #{target_ip}:#{target_port})\""
                 if nth == target_ips.size-1
                     # last rule should catch the remaining traffic
                     every_nth = ""
@@ -71,11 +70,13 @@ kube_get("default", "namespace")["items"].map{|ns|ns["metadata"]["name"]}.each d
                 end
 
                 port_dnat = \
-                    "#{dnat} #{port_match} #{port_comment}" +
+                    "#{dnat} #{source_port_match} #{rule_comment}" +
                     every_nth +
                     " -j DNAT --to-destination #{target_ip}:#{target_port}"
 
                 dnat_rules << port_dnat
+
+                snat_rules << "-A my-snat -d #{target_ip}/32 -j MASQUERADE #{target_port_match} #{rule_comment}"
             end
         end
         # Also reject remaining traffic to the service IP
@@ -100,3 +101,4 @@ end
 sync_rules "my-dnat", dnat_rules
 sync_rules "my-snat", snat_rules
 
+$log.info "Finished."
