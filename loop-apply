@@ -1,0 +1,6 @@
+#! /bin/sh
+while true
+do
+    ruby ./iptables-routing.rb
+    sleep 1m
+done

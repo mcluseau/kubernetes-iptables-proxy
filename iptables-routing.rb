@@ -35,13 +35,13 @@ kube_get("default", "namespace")["items"].map{|ns|ns["metadata"]["name"]}.each d
         next if ns == "default" && (service.name == "kubernetes" || service.name == "kubernetes-ro")
 
         $log.debug "  - s #{service["metadata"]["name"]}"
-        service_ip = service["spec"]["portalIP"]
+        service_ip = service["spec"]["clusterIP"]
         $log.debug "    - service IP: #{service_ip}"
 
         target_ips = []
         endpoints[service.name].each do |endpoint|
             endpoint["subsets"].each do |subset|
-                target_ips += (subset["addresses"]||[]).map{|address| address["IP"]}
+                target_ips += (subset["addresses"]||[]).map{|address| address["ip"]}
             end
         end
         target_ips.sort!
@@ -50,7 +50,7 @@ kube_get("default", "namespace")["items"].map{|ns|ns["metadata"]["name"]}.each d
         comment = "service #{ns}/#{service.name}"
 
         service["spec"]["ports"].each do |port|
-            port_name = port["name"]
+            port_name = port["name"]||""
             port_name = nil if port_name.empty?
             protocol = port["protocol"].downcase
             source_port = port["port"]
@@ -90,6 +90,7 @@ end
 def sync_rules(chain, rules)
     $log.info "Updating chain #{chain} ..."
     # use iptables-restore for transationnal update
+    puts "#{ARGV.map{|a|a.shellescape}.join(" ")} iptables-restore --noflush"
     IO.popen("#{ARGV.map{|a|a.shellescape}.join(" ")} iptables-restore --noflush", "w") do |ssh|
         ssh.puts "*nat"
         ssh.puts ":#{chain} -"
