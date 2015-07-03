@@ -55,8 +55,8 @@ kube_get("default", "namespace")["items"].map{|ns|ns["metadata"]["name"]}.each d
             protocol = port["protocol"].downcase
             source_port = port["port"]
             target_port = port["targetPort"]
-            target_port_match = "-m #{protocol} -p #{protocol} --dport #{source_port}"
-            source_port_match = "-m #{protocol} -p #{protocol} --dport #{target_port}"
+            source_port_match = "-m #{protocol} -p #{protocol} --dport #{source_port}"
+            target_port_match = "-m #{protocol} -p #{protocol} --dport #{target_port}"
 
             $log.debug "      - port: #{source_port} -> #{target_port}"
             target_ips.each_with_index do |target_ip, nth|
